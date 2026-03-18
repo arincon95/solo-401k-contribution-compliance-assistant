@@ -78,11 +78,9 @@ def federal_marginal_rate_2026(taxable_income: float, filing_status: str) -> flo
     income = max(0.0, taxable_income)
     brackets = get_brackets_2026(filing_status)
 
-    lower_bound = 0.0
     for upper_bound, rate in brackets:
         if income <= upper_bound:
             return rate * 100
-        lower_bound = upper_bound
 
     return 37.0
 
@@ -109,6 +107,20 @@ def calculate_employer_contribution_max(entity_type: str, compensation: float, a
 
     cap_after_employee = max(0.0, ANNUAL_ADDITIONS_LIMIT - available_base_deferral)
     return max(0.0, min(raw_employer, cap_after_employee))
+
+def allocate_chosen_contribution(chosen_amount: float, available_base_deferral: float, available_catch_up: float, employer_contribution_max: float):
+    remaining = max(0.0, chosen_amount)
+
+    chosen_employee_deferral = min(remaining, available_base_deferral)
+    remaining -= chosen_employee_deferral
+
+    chosen_catch_up = min(remaining, available_catch_up)
+    remaining -= chosen_catch_up
+
+    chosen_employer = min(remaining, employer_contribution_max)
+    remaining -= chosen_employer
+
+    return chosen_employee_deferral, chosen_catch_up, chosen_employer
 
 # -----------------------------
 # Styling
@@ -163,14 +175,6 @@ st.markdown("""
         margin-top: 0.75rem;
     }
 
-    .warn-box {
-        padding: 0.95rem 1.05rem;
-        border-left: 4px solid #f59e0b;
-        border-radius: 12px;
-        background: rgba(245,158,11,0.10);
-        margin-top: 0.75rem;
-    }
-
     .disclaimer-box {
         padding: 1rem 1.1rem;
         border: 1px solid rgba(128, 128, 128, 0.22);
@@ -186,7 +190,7 @@ st.markdown("""
 # Sidebar Inputs
 # -----------------------------
 st.sidebar.header("Solo 401(k) Planning Inputs")
-st.sidebar.caption("Version 1 MVP • 2026 rules • Pretax contribution estimate")
+st.sidebar.caption("Version 2 MVP • 2026 rules • Pretax contribution estimate")
 
 tax_year = st.sidebar.selectbox("Tax year", [2026], index=0)
 
@@ -274,7 +278,7 @@ spouse_participating = st.sidebar.selectbox(
 )
 
 # -----------------------------
-# Calculations
+# Core Calculations
 # -----------------------------
 catch_up_limit = get_catch_up_limit(owner_age)
 available_base_deferral = max(0.0, ELECTIVE_DEFERRAL_LIMIT - other_plan_deferrals)
@@ -296,17 +300,53 @@ employer_contribution_max = max(0.0, non_catchup_total - available_base_deferral
 
 max_total_contribution = non_catchup_total + available_catch_up
 
+# -----------------------------
+# Chosen Contribution Input
+# -----------------------------
+default_chosen = min(7000.0, max_total_contribution) if max_total_contribution > 0 else 0.0
+
+chosen_contribution_input = st.sidebar.number_input(
+    "Chosen contribution amount ($)",
+    min_value=0.0,
+    max_value=float(max_total_contribution),
+    value=float(default_chosen),
+    step=500.0,
+    format="%.0f"
+)
+
+chosen_contribution = min(chosen_contribution_input, max_total_contribution)
+remaining_unused_capacity = max(0.0, max_total_contribution - chosen_contribution)
+
+chosen_employee_deferral, chosen_catch_up, chosen_employer = allocate_chosen_contribution(
+    chosen_amount=chosen_contribution,
+    available_base_deferral=available_base_deferral,
+    available_catch_up=available_catch_up,
+    employer_contribution_max=employer_contribution_max
+)
+
+# -----------------------------
+# Tax Calculations
+# -----------------------------
 federal_marginal_rate = federal_marginal_rate_2026(current_taxable_income, filing_status)
-taxable_income_after_contribution = max(0.0, current_taxable_income - max_total_contribution)
+
+taxable_income_after_max = max(0.0, current_taxable_income - max_total_contribution)
+taxable_income_after_chosen = max(0.0, current_taxable_income - chosen_contribution)
 
 federal_tax_before = federal_tax_2026(current_taxable_income, filing_status)
-federal_tax_after = federal_tax_2026(taxable_income_after_contribution, filing_status)
-estimated_federal_tax_savings = max(0.0, federal_tax_before - federal_tax_after)
+federal_tax_after_max = federal_tax_2026(taxable_income_after_max, filing_status)
+federal_tax_after_chosen = federal_tax_2026(taxable_income_after_chosen, filing_status)
 
-estimated_state_tax_savings = max_total_contribution * (state_tax_rate / 100)
-estimated_total_tax_savings = estimated_federal_tax_savings + estimated_state_tax_savings
+estimated_federal_tax_savings_max = max(0.0, federal_tax_before - federal_tax_after_max)
+estimated_state_tax_savings_max = max_total_contribution * (state_tax_rate / 100)
+estimated_total_tax_savings_max = estimated_federal_tax_savings_max + estimated_state_tax_savings_max
 
-# Eligibility / compliance
+estimated_federal_tax_savings_chosen = max(0.0, federal_tax_before - federal_tax_after_chosen)
+estimated_state_tax_savings_chosen = chosen_contribution * (state_tax_rate / 100)
+estimated_total_tax_savings_chosen = estimated_federal_tax_savings_chosen + estimated_state_tax_savings_chosen
+
+# -----------------------------
+# Eligibility / Compliance
+# -----------------------------
 appears_solo_eligible = has_non_owner_employees == "No"
 form_5500_ez_flag = plan_assets > FORM_5500_EZ_THRESHOLD
 
@@ -354,22 +394,23 @@ st.markdown("""
 <div class="hero-box">
     <div class="hero-title">Solo 401(k) Contribution & Compliance Assistant</div>
     <p class="hero-subtitle">
-        Estimate eligibility, contribution limits, current-year tax benefit, and compliance flags
+        Estimate eligibility, contribution limits, chosen-contribution tax benefit, and compliance flags
         for a one-participant 401(k) planning conversation.
     </p>
 </div>
 """, unsafe_allow_html=True)
 
-st.caption("Internal demo • Version 1 MVP • 2026 rules • Pretax estimate")
+st.caption("Internal demo • Version 2 MVP • 2026 rules • Pretax estimate • Includes custom chosen contribution scenario")
 
 # -----------------------------
 # KPI Row
 # -----------------------------
-k1, k2, k3, k4 = st.columns(4)
+k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("Eligibility Status", "Eligible" if appears_solo_eligible else "Needs Review")
 k2.metric("Max Total Contribution", currency(max_total_contribution))
-k3.metric("Estimated Tax Benefit", currency(estimated_total_tax_savings))
-k4.metric("Federal Marginal Rate", percent(federal_marginal_rate))
+k3.metric("Chosen Contribution", currency(chosen_contribution))
+k4.metric("Remaining Capacity", currency(remaining_unused_capacity))
+k5.metric("Federal Marginal Rate", percent(federal_marginal_rate))
 
 st.divider()
 
@@ -379,7 +420,7 @@ st.divider()
 left, right = st.columns([1.35, 1])
 
 with left:
-    st.markdown('<div class="section-title">Contribution Breakdown</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Maximum Contribution Breakdown</div>', unsafe_allow_html=True)
 
     breakdown_df = pd.DataFrame({
         "Category": [
@@ -387,56 +428,64 @@ with left:
             "Available catch-up",
             "Estimated employer contribution max",
             "Estimated maximum total contribution",
-            "Projected taxable income after contribution"
+            "Projected taxable income after maximum contribution"
         ],
         "Value": [
             available_base_deferral,
             available_catch_up,
             employer_contribution_max,
             max_total_contribution,
-            taxable_income_after_contribution
+            taxable_income_after_max
         ]
     })
 
     display_breakdown = breakdown_df.copy()
     display_breakdown["Value"] = display_breakdown["Value"].map(currency)
-
     st.dataframe(display_breakdown, hide_index=True, use_container_width=True)
+
+    st.markdown('<div class="section-title" style="margin-top:1rem;">Chosen Contribution Scenario</div>', unsafe_allow_html=True)
+
+    chosen_df = pd.DataFrame({
+        "Category": [
+            "Chosen contribution amount",
+            "Chosen employee deferral",
+            "Chosen catch-up contribution",
+            "Chosen employer contribution",
+            "Remaining unused contribution capacity",
+            "Projected taxable income after chosen contribution",
+            "Estimated federal tax savings at chosen contribution",
+            "Estimated state tax savings at chosen contribution",
+            "Estimated total tax benefit at chosen contribution"
+        ],
+        "Value": [
+            chosen_contribution,
+            chosen_employee_deferral,
+            chosen_catch_up,
+            chosen_employer,
+            remaining_unused_capacity,
+            taxable_income_after_chosen,
+            estimated_federal_tax_savings_chosen,
+            estimated_state_tax_savings_chosen,
+            estimated_total_tax_savings_chosen
+        ]
+    })
+
+    display_chosen = chosen_df.copy()
+    display_chosen["Value"] = display_chosen["Value"].map(currency)
+    st.dataframe(display_chosen, hide_index=True, use_container_width=True)
 
     st.markdown(
         f"""
         <div class="note-box">
             <strong>Quick read:</strong><br>
-            Based on the inputs entered, the owner appears to have an estimated maximum Solo 401(k)
-            contribution of <strong>{currency(max_total_contribution)}</strong>. At current assumptions,
-            that may reduce current-year taxes by approximately <strong>{currency(estimated_total_tax_savings)}</strong>.
+            The owner appears to have an estimated maximum Solo 401(k) contribution of <strong>{currency(max_total_contribution)}</strong>.
+            If the owner contributes <strong>{currency(chosen_contribution)}</strong> instead of the maximum, the estimated
+            current-year tax benefit would be approximately <strong>{currency(estimated_total_tax_savings_chosen)}</strong>,
+            leaving <strong>{currency(remaining_unused_capacity)}</strong> of unused contribution capacity.
         </div>
         """,
         unsafe_allow_html=True
     )
-
-    st.markdown('<div class="section-title" style="margin-top:1rem;">Estimated Tax Benefit</div>', unsafe_allow_html=True)
-
-    tax_df = pd.DataFrame({
-        "Measure": [
-            "Federal tax before contribution",
-            "Federal tax after contribution",
-            "Estimated federal tax savings",
-            "Estimated state tax savings",
-            "Estimated total tax savings"
-        ],
-        "Value": [
-            federal_tax_before,
-            federal_tax_after,
-            estimated_federal_tax_savings,
-            estimated_state_tax_savings,
-            estimated_total_tax_savings
-        ]
-    })
-
-    display_tax = tax_df.copy()
-    display_tax["Value"] = display_tax["Value"].map(currency)
-    st.dataframe(display_tax, hide_index=True, use_container_width=True)
 
 with right:
     st.markdown('<div class="section-title">Key Assumptions</div>', unsafe_allow_html=True)
@@ -454,6 +503,7 @@ with right:
             <p><strong>State tax rate:</strong> {percent(state_tax_rate)}</p>
             <p><strong>Estimated year-end plan assets:</strong> {currency(plan_assets)}</p>
             <p><strong>Employer contribution formula:</strong> {employer_contribution_rate_label(entity_type)}</p>
+            <p><strong>Chosen contribution amount:</strong> {currency(chosen_contribution)}</p>
             <p style="margin-bottom:0;"><strong>Spouse participating:</strong> {spouse_participating}</p>
         </div>
         """,
@@ -475,14 +525,14 @@ st.divider()
 c1, c2 = st.columns(2)
 
 with c1:
-    st.markdown('<div class="section-title">Contribution Mix</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Maximum vs Chosen Contribution</div>', unsafe_allow_html=True)
     fig_contrib = go.Figure()
     fig_contrib.add_bar(
-        x=["Employee Deferral", "Catch-Up", "Employer Contribution"],
-        y=[available_base_deferral, available_catch_up, employer_contribution_max]
+        x=["Maximum Contribution", "Chosen Contribution", "Remaining Unused Capacity"],
+        y=[max_total_contribution, chosen_contribution, remaining_unused_capacity]
     )
     fig_contrib.update_layout(
-        xaxis_title="Contribution Type",
+        xaxis_title="Contribution View",
         yaxis_title="Amount ($)",
         height=420,
         margin=dict(l=20, r=20, t=20, b=20)
@@ -490,11 +540,11 @@ with c1:
     st.plotly_chart(fig_contrib, use_container_width=True)
 
 with c2:
-    st.markdown('<div class="section-title">Tax Benefit View</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Tax Benefit at Chosen Contribution</div>', unsafe_allow_html=True)
     fig_tax = go.Figure()
     fig_tax.add_bar(
         x=["Federal Savings", "State Savings", "Total Savings"],
-        y=[estimated_federal_tax_savings, estimated_state_tax_savings, estimated_total_tax_savings]
+        y=[estimated_federal_tax_savings_chosen, estimated_state_tax_savings_chosen, estimated_total_tax_savings_chosen]
     )
     fig_tax.update_layout(
         xaxis_title="Tax Measure",
@@ -520,13 +570,13 @@ with p1:
 
 with p2:
     st.info(
-        f"**Estimated maximum contribution:** {currency(max_total_contribution)}\n\n"
-        f"This combines available employee deferral, catch-up if applicable, and estimated employer contribution."
+        f"**Maximum available contribution:** {currency(max_total_contribution)}\n\n"
+        f"The selected contribution amount is {currency(chosen_contribution)}, leaving {currency(remaining_unused_capacity)} unused."
     )
 
 with p3:
     st.info(
-        f"**Estimated current-year tax benefit:** {currency(estimated_total_tax_savings)}\n\n"
+        f"**Estimated tax benefit at chosen contribution:** {currency(estimated_total_tax_savings_chosen)}\n\n"
         f"This assumes pretax contributions and uses 2026 federal brackets plus the state tax rate entered."
     )
 
